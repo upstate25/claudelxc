@@ -34,14 +34,20 @@ not have), use a Gemini API key instead:
   superpowers plugin (best-effort install) and the context7 docs MCP server.
 - **Rules file**: `/project/AGENTS.md`, seeded once and then yours to edit.
 
-There is **no web UI**: CloudCLI doesn't support agy. Use `agy` over SSH, connect the
-Antigravity desktop app to the box over SSH, or run `agy remote-control start` to
-reach it from other devices.
+- **code-server** (VS Code in the browser) on `https://<box-ip>:8443/?folder=/project`:
+  editor, file tree, git panel and a terminal where you run `agy`. Password auth with a
+  random password made on first install (see `/root/.config/code-server/config.yaml`),
+  HTTPS with a self-signed cert (accept the browser warning once). The installer prints
+  the URL and password at the end.
+
+CloudCLI UI is not included (it doesn't support agy). You can also use `agy` over SSH,
+connect the Antigravity desktop app to the box over SSH, or run
+`agy remote-control start` to reach it from other devices.
 
 ## It keeps itself updated
 
 Every night at 04:00 the box pulls this branch, re-applies the setup, patches the OS,
-re-runs the agy installer (agy has no `update` command), refreshes container images and
+re-runs the agy and code-server installers (agy has no `update` command), refreshes container images and
 runs a health check. Your sign-in and everything under `/project` are kept.
 
 ```bash
@@ -59,6 +65,7 @@ Log: `/var/log/claudelxc-update.log`. To turn nightly updates off, delete `/etc/
 | MCP servers | `/root/.gemini/config/mcp_config.json` |
 | Skills | `/root/.gemini/config/skills/` |
 | Optional API key | `/etc/claudelxc/agy.env` |
+| code-server config (port, password; kept across updates) | `/root/.config/code-server/config.yaml` |
 | Deploy checkout | `/opt/claudelxc` |
 
 ## Good to know

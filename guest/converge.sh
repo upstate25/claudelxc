@@ -326,6 +326,44 @@ if systemctl cat cloudcli.service >/dev/null 2>&1; then
   systemctl disable --now cloudcli >/dev/null 2>&1 || true
 fi
 
+# ── code-server (VS Code in the browser) on :8443 ───────────────────────────
+# agy has no web UI, so code-server is the browser front end: editor, file tree,
+# git panel and a terminal where you run `agy`. Official installer (installs the
+# .deb on Ubuntu); claudelxc-update re-runs it to upgrade. The config is USER
+# STATE: written once with a random password, never overwritten, so a password
+# you change survives updates. HTTPS with a self-signed cert, because browsers
+# block webviews, clipboard and service workers on plain-HTTP non-localhost
+# origins (expect a one-time certificate warning).
+if ! command -v code-server >/dev/null 2>&1; then
+  log "Installing code-server"
+  curl -fsSL https://code-server.dev/install.sh | sh || warn "code-server install failed"
+fi
+if command -v code-server >/dev/null 2>&1; then
+  CS_CONF=/root/.config/code-server/config.yaml
+  if [ ! -f "$CS_CONF" ] || ! grep -q '^bind-addr: 0.0.0.0:8443' "$CS_CONF"; then
+    log "Writing code-server config (:8443, password auth, self-signed HTTPS)"
+    mkdir -p "$(dirname "$CS_CONF")"
+    # Keep an existing password (e.g. the installer's default config) if there is one.
+    CS_PASS="$(sed -n 's/^password: *//p' "$CS_CONF" 2>/dev/null | head -1)"
+    [ -n "$CS_PASS" ] || CS_PASS="$(head -c 18 /dev/urandom | base64 | tr -d '/+=' | head -c 24)"
+    umask 077
+    cat > "$CS_CONF" <<CSCONF
+bind-addr: 0.0.0.0:8443
+auth: password
+password: $CS_PASS
+cert: true
+CSCONF
+    umask 022
+    CS_RESTART=1
+  fi
+  chmod 0600 "$CS_CONF"
+  systemctl enable code-server@root >/dev/null 2>&1 || true
+  if [ "${CS_RESTART:-0}" = 1 ] || ! systemctl is-active --quiet code-server@root; then
+    systemctl restart code-server@root || warn "code-server failed to start (journalctl -u code-server@root)"
+  fi
+  echo "    code-server $(code-server --version 2>/dev/null | head -1 | awk '{print $1}') on https://<box-ip>:8443/?folder=/project"
+fi
+
 # ── Update tooling (MANAGED — copied from the repo each converge) ───────────
 log "Installing update tooling (claudelxc-update / claudelxc-doctor)"
 install -m 0755 "$BINDIR/claudelxc-update" /usr/local/bin/claudelxc-update

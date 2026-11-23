@@ -835,7 +835,8 @@ write_notes() {
 # 🛸 Antigravity CLI Container
 
 **SSH:** `ssh root@__IP__`   |   **Console:** `pct enter __CTID__`
-**No web UI** — use `agy` over SSH, or connect the Antigravity desktop app to this box over SSH.
+**code-server (VS Code in the browser):** https://__IP__:8443/?folder=/project — password in `/root/.config/code-server/config.yaml`
+Run `agy` in its terminal, over SSH, or connect the Antigravity desktop app to this box over SSH.
 
 ## Start Antigravity
 SSH in, run `agy` (the shell auto-cd's to `/project`). First run prints a sign-in
@@ -853,6 +854,7 @@ API key instead: put `GEMINI_API_KEY=...` in `/etc/claudelxc/agy.env` (chmod 600
 - Settings: `/root/.gemini/antigravity-cli/settings.json` (auto mode + secret deny-floor)
 - MCP servers: `/root/.gemini/config/mcp_config.json` (context7)
 - Rules: `/project/AGENTS.md`
+- code-server: `/root/.config/code-server/config.yaml` (port, password; kept across updates) — `systemctl status code-server@root`
 - Deploy source of truth: `/opt/claudelxc` (git checkout)
 
 ---
@@ -884,8 +886,12 @@ print_summary() {
   echo -e "  ${BOLD}Connect:${NC}"
   echo -e "    Console: ${CYAN}pct enter $CT_ID${NC}"
   [[ -n "${ct_ip:-}" ]] && echo -e "    SSH:     ${CYAN}ssh root@${ct_ip}${NC}"
+  local cs_pass
+  cs_pass=$(pct exec "$CT_ID" -- sed -n 's/^password: *//p' /root/.config/code-server/config.yaml 2>/dev/null | head -1) || cs_pass=""
+  echo -e "    Browser: ${CYAN}https://${ct_ip:-<container-ip>}:8443/?folder=/project${NC}  (code-server; accept the self-signed cert)"
+  echo -e "    Password: ${cs_pass:-see /root/.config/code-server/config.yaml}"
   echo ""
-  echo -e "  ${BOLD}Start Antigravity:${NC} ${CYAN}agy${NC}  (over SSH; shell auto-cd's to /project)"
+  echo -e "  ${BOLD}Start Antigravity:${NC} ${CYAN}agy${NC}  (code-server terminal or SSH; shell auto-cd's to /project)"
   echo -e "  ${BOLD}Sign-in:${NC}     agy prints a URL -> open on your PC -> paste the code back"
   echo -e "  ${BOLD}Permissions:${NC} agentMode auto + deny floor for secrets"
   echo -e "  ${BOLD}Updates:${NC}     Self-updates nightly from ${BRANCH}. Force now: ${CYAN}claudelxc-update${NC}"

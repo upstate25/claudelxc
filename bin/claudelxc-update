@@ -9,7 +9,7 @@
 #      and re-run the idempotent converge. Converge also patches the OS
 #      (apt update + upgrade), so a self-update fully updates the box. This is
 #      what lets an improvement to the deployer reach a deployed box on its own.
-#   2. npm (latest), Antigravity CLI (agy) (latest).
+#   2. npm (latest), Antigravity CLI (agy) (latest), code-server (latest).
 #   3. Container images (one-shot Watchtower).
 #   4. A health check (claudelxc-doctor).
 #
@@ -76,6 +76,15 @@ if curl -fsSL https://antigravity.google/cli/install.sh | bash -s -- --skip-alia
   echo "    agy: $(agy --version 2>/dev/null | head -1 || echo 'version unknown')"
 else
   echo "    [WARN] Antigravity CLI update failed"
+fi
+
+echo "    code-server..."
+# Re-running the official installer upgrades the .deb in place; config is kept.
+if curl -fsSL https://code-server.dev/install.sh | sh >/dev/null 2>&1; then
+  systemctl restart code-server@root || echo "    [WARN] code-server restart failed"
+  echo "    code-server: $(code-server --version 2>/dev/null | head -1 | awk '{print $1}')"
+else
+  echo "    [WARN] code-server update failed"
 fi
 
 echo ">>> [4/5] Docker images (one-shot Watchtower)..."

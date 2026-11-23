@@ -11,6 +11,7 @@
       "read_file(/etc/ssh)",
       "read_file(/root/.gemini/antigravity/mcp_oauth_tokens.json)",
       "read_file(/root/.config/gcloud)",
+      "read_file(/root/.config/code-server/config.yaml)",
       "command(dd)",
       "command(regex:^mkfs)",
       "command(rm -rf /)",

@@ -17,6 +17,8 @@ check "agentMode is auto"           "python3 -c 'import json,sys; sys.exit(json.
 note  "webapp-testing skill present" "test -f /root/.gemini/config/skills/webapp-testing/SKILL.md"
 # agy has no documented non-interactive login check; this is a hint only.
 note  "agy sign-in (run 'agy' over SSH if WARN; API key set counts)" "grep -q '^GEMINI_API_KEY=.' /etc/claudelxc/agy.env || ls /root/.local/share/keyrings/* >/dev/null 2>&1"
+check "code-server running"         "systemctl is-active --quiet code-server@root"
+check "code-server answers on :8443" "curl -ksf -o /dev/null https://127.0.0.1:8443/healthz"
 check "docker daemon running"       "systemctl is-active --quiet docker"
 note  "claudelxc checkout present"  "test -d /opt/claudelxc/.git"
 # Parse df once; an unreadable df is a "can't tell", not a failed box.
