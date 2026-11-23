@@ -1,0 +1,20 @@
+{
+  "$schema": "https://antigravity.google/schemas/v1/settings.json",
+  "agentMode": "auto",
+  "permissions": {
+    "deny": [
+      "read_file(.env)",
+      "read_file(.env.local)",
+      "read_file(.env.production)",
+      "read_file(/etc/claudelxc/agy.env)",
+      "read_file(/root/.ssh)",
+      "read_file(/etc/ssh)",
+      "read_file(/root/.gemini/antigravity/mcp_oauth_tokens.json)",
+      "read_file(/root/.config/gcloud)",
+      "command(dd)",
+      "command(regex:^mkfs)",
+      "command(rm -rf /)",
+      "command(rm -rf ~)"
+    ]
+  }
+}

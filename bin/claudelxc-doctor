@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# claudelxc-doctor - health check for the Claude Code container.
+# claudelxc-doctor - health check for the Antigravity CLI container.
 # Exit 0 = healthy, non-zero = one or more checks failed.
 LOG_TAG="[doctor]"
 rc=0
@@ -9,12 +9,14 @@ check() { if eval "$2" >/dev/null 2>&1; then echo "  OK   $1"; else echo "  FAIL
 note()  { if eval "$2" >/dev/null 2>&1; then echo "  OK   $1"; else echo "  WARN $1"; fi; }
 
 echo "$LOG_TAG $(date '+%Y-%m-%d %H:%M:%S %Z')"
-check "claude binary present"       "command -v claude"
-check "claude reports a version"    "claude --version"
-check "settings.json is valid JSON" "python3 -m json.tool /root/.claude/settings.json"
-note  "claude logged in (creds on disk; run 'claude' /login if WARN)" "test -s /root/.claude/.credentials.json"
-check "cloudcli service active"     "systemctl is-active --quiet cloudcli"
-check "UI listening on :3001"       "ss -ltn | grep -q ':3001'"
+check "agy binary present"          "command -v agy"
+note  "agy reports a version"       "agy --version"
+check "agy settings.json valid JSON" "python3 -m json.tool /root/.gemini/antigravity-cli/settings.json"
+check "MCP config valid JSON"       "python3 -m json.tool /root/.gemini/config/mcp_config.json"
+check "agentMode is auto"           "python3 -c 'import json,sys; sys.exit(json.load(open(\"/root/.gemini/antigravity-cli/settings.json\")).get(\"agentMode\")!=\"auto\")'"
+note  "webapp-testing skill present" "test -f /root/.gemini/config/skills/webapp-testing/SKILL.md"
+# agy has no documented non-interactive login check; this is a hint only.
+note  "agy sign-in (run 'agy' over SSH if WARN; API key set counts)" "grep -q '^GEMINI_API_KEY=.' /etc/claudelxc/agy.env || ls /root/.local/share/keyrings/* >/dev/null 2>&1"
 check "docker daemon running"       "systemctl is-active --quiet docker"
 note  "claudelxc checkout present"  "test -d /opt/claudelxc/.git"
 # Parse df once; an unreadable df is a "can't tell", not a failed box.

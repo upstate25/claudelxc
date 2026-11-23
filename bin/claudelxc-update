@@ -9,7 +9,7 @@
 #      and re-run the idempotent converge. Converge also patches the OS
 #      (apt update + upgrade), so a self-update fully updates the box. This is
 #      what lets an improvement to the deployer reach a deployed box on its own.
-#   2. npm (latest), Claude Code, CloudCLI UI (latest).
+#   2. npm (latest), Antigravity CLI (agy) (latest).
 #   3. Container images (one-shot Watchtower).
 #   4. A health check (claudelxc-doctor).
 #
@@ -34,13 +34,13 @@ echo ">>> claudelxc-update starting: $(date '+%Y-%m-%d %H:%M:%S %Z')"
 conf_get() { [ -f "$1" ] && awk -F= -v k="$2" '$1==k{sub(/^[^=]*=/,"");gsub(/^[ "]+|[ "]+$/,"");print;exit}' "$1"; }
 
 CHECKOUT="$(conf_get "$CONF" CHECKOUT)"; CHECKOUT="${CHECKOUT:-/opt/claudelxc}"
-BRANCH="$(conf_get "$CONF" BRANCH)";     BRANCH="${BRANCH:-stable}"
-REPO="$(conf_get "$CONF" REPO)";         REPO="${REPO:-https://github.com/serversathome/claudelxc.git}"
+BRANCH="$(conf_get "$CONF" BRANCH)";     BRANCH="${BRANCH:-antigravity}"
+REPO="$(conf_get "$CONF" REPO)";         REPO="${REPO:-https://github.com/upstate25/claudelxc.git}"
 
 # --- 1. claudelxc itself: pull latest, then run the fresh converge. --------------
 # The converge is the single source of truth for in-container config; re-running
 # it lays down the newest settings/units/skills/tooling (managed files) while
-# leaving user state (creds, CloudCLI login, /project files) untouched.
+# leaving user state (agy sign-in, /project files) untouched.
 echo ">>> [1/5] claudelxc self-update (branch: $BRANCH)..."
 if command -v git >/dev/null 2>&1; then
   if [ ! -d "$CHECKOUT/.git" ]; then
@@ -66,40 +66,16 @@ fi
 
 echo ">>> [2/5] npm (latest)..."
 npm install -g --no-fund --no-audit --loglevel=error npm@latest || echo "    [WARN] npm self-update failed"
-# The npm upgrade above may be what first crosses a box into npm 12+, whose new
-# allowlist blocks dependencies' install scripts — which stops CloudCLI's native
-# modules (better-sqlite3/node-pty/bcrypt) from compiling on the reinstall below,
-# leaving the service crash-looping with ":3001 down". Disable that gate NOW, in
-# the same run, so the reinstall builds cleanly. (Persisted to /root/.npmrc.)
-npm config set dangerously-allow-all-scripts true 2>/dev/null || true
 
-echo ">>> [3/5] Claude Code + CloudCLI UI..."
-# `claude update` is the documented manual update path for a native install
-# (DISABLE_AUTOUPDATER only stops the background check; it honors the
-# autoUpdatesChannel / minimumVersion settings). Fall back to re-running the
-# installer when claude is missing or too old to have `update`.
-if command -v claude >/dev/null 2>&1 && claude update; then
-  echo "    Claude Code: $(claude --version 2>/dev/null || echo 'version unknown')"
+echo ">>> [3/5] Antigravity CLI (agy)..."
+# The docs have no `agy update` command; the documented way to update is to
+# re-run the official installer, which replaces the binary in place.
+# --skip-aliases / --skip-path: converge already put agy on PATH via
+# /usr/local/bin/agy, so the installer needn't edit shell profiles again.
+if curl -fsSL https://antigravity.google/cli/install.sh | bash -s -- --skip-aliases --skip-path; then
+  echo "    agy: $(agy --version 2>/dev/null | head -1 || echo 'version unknown')"
 else
-  # Root install is intentional here. If this was run via `sudo claudelxc-update`,
-  # the installer would stop on the sudo check without this opt-in (issue #8).
-  curl -fsSL https://claude.ai/install.sh | CLAUDE_INSTALL_ALLOW_SUDO=1 bash || echo "    [WARN] Claude Code update failed"
-fi
-npm install -g --no-fund --no-audit --loglevel=error @cloudcli-ai/cloudcli@latest || echo "    [WARN] CloudCLI UI update failed"
-# Self-heal: if the reinstall left the native addon uncompiled (npm-12 allowlist,
-# or a partial upgrade), rebuild it before restart — otherwise cloudcli crash-loops
-# and nothing binds :3001. Same guard converge uses; no-op once the binding exists.
-CCUI_PKG="$(npm root -g 2>/dev/null)/@cloudcli-ai/cloudcli"
-if [ -d "$CCUI_PKG/node_modules/better-sqlite3" ] && \
-   ! ls "$CCUI_PKG/node_modules/better-sqlite3/build/Release/"*.node >/dev/null 2>&1; then
-  echo "    rebuilding CloudCLI native modules (better-sqlite3/node-pty/bcrypt)"
-  ( cd "$CCUI_PKG" && npm rebuild >/dev/null 2>&1 ) || echo "    [WARN] CloudCLI native rebuild failed"
-fi
-if systemctl list-unit-files cloudcli.service >/dev/null 2>&1 &&
-   systemctl cat cloudcli.service >/dev/null 2>&1; then
-  systemctl restart cloudcli || echo "    [WARN] cloudcli restart failed (see 'journalctl -u cloudcli')"
-else
-  echo "    [WARN] cloudcli.service not installed; skipping restart"
+  echo "    [WARN] Antigravity CLI update failed"
 fi
 
 echo ">>> [4/5] Docker images (one-shot Watchtower)..."

@@ -6,7 +6,7 @@
 # "frozen" — it has Claude Code but no nightly self-update, so improvements to
 # the deployer never reach it. Run this INSIDE that container as root:
 #
-#   bash <(curl -fsSL https://raw.githubusercontent.com/serversathome/claudelxc/stable/adopt.sh)
+#   bash <(curl -fsSL https://raw.githubusercontent.com/upstate25/claudelxc/antigravity/adopt.sh)
 #
 # It does NOT recreate the container and does NOT touch your work. It only wires
 # the box into the fleet, then hands off to the normal idempotent converge:
@@ -17,12 +17,12 @@
 # After this, /etc/cron.d/claudelxc self-updates the box from the tracked branch
 # every night — exactly like a freshly deployed box. Re-running adopt is safe.
 #
-# Overrides (env): CLAUDELXC_BRANCH (default: stable), CLAUDELXC_REPO.
+# Overrides (env): CLAUDELXC_BRANCH (default: antigravity), CLAUDELXC_REPO.
 # ============================================================================
 set -euo pipefail
 
-REPO="${CLAUDELXC_REPO:-https://github.com/serversathome/claudelxc.git}"
-BRANCH="${CLAUDELXC_BRANCH:-stable}"
+REPO="${CLAUDELXC_REPO:-https://github.com/upstate25/claudelxc.git}"
+BRANCH="${CLAUDELXC_BRANCH:-antigravity}"
 CHECKOUT=/opt/claudelxc
 
 say() { echo ">>> $*"; }
@@ -43,10 +43,11 @@ say "Adopting this box into claudelxc (branch: $BRANCH)"
 # ── Back up settings.json before converge first touches it ──────────────────
 # converge MERGES the managed keys into settings.json (your own plugins, rules,
 # statusLine, hooks survive), but keep a pre-adopt copy anyway so the exact
-# original is one `cp` away. (User state — creds, /project, CloudCLI auth — is
+# original is one `cp` away. (User state — agy sign-in, /project — is
 # never touched by converge, so it needs no backup.)
-if [ -f /root/.claude/settings.json ] && [ ! -f /root/.claude/settings.json.pre-claudelxc ]; then
-  cp -a /root/.claude/settings.json /root/.claude/settings.json.pre-claudelxc
+AGY_SETTINGS=/root/.gemini/antigravity-cli/settings.json
+if [ -f "$AGY_SETTINGS" ] && [ ! -f "$AGY_SETTINGS.pre-claudelxc" ]; then
+  cp -a "$AGY_SETTINGS" "$AGY_SETTINGS.pre-claudelxc"
   say "Backed up existing settings.json -> settings.json.pre-claudelxc"
 fi
 

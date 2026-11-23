@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # ============================================================================
-# claudelxc converge - idempotent in-container setup.
+# claudelxc converge (antigravity branch) - idempotent in-container setup.
 #
 # Runs INSIDE the LXC as root. Invoked once at deploy time by install.sh, and
 # again on every nightly claudelxc-update. Re-running is safe: it refreshes
 # MANAGED config (settings, systemd unit, skills, update tooling) and installs
 # anything missing, while never touching USER STATE:
-#   - /root/.claude/.credentials.json      (Claude login)
-#   - /root/.cloudcli/auth.db              (CloudCLI UI login)
-#   - files under /project                 (your work, incl. an edited CLAUDE.md)
+#   - the agy sign-in (OS keyring) and /etc/claudelxc/agy.env (API key, if used)
+#   - your own agy plugins/skills/MCP servers (managed keys are merged, not clobbered)
+#   - files under /project                 (your work, incl. an edited AGENTS.md)
 #
 # Deliberately NOT 'set -e': one step failing must not abort the rest (a browser
 # download or a plugin install must never take down Docker/SSH/cron).
@@ -16,8 +16,8 @@
 set -uo pipefail
 export DEBIAN_FRONTEND=noninteractive
 # When install.sh is run on the Proxmox host via sudo, `pct exec` carries the
-# host's SUDO_* variables into the container. Tools here (notably Claude Code's
-# installer) then think they were run via sudo by a non-root user. We are root
+# host's SUDO_* variables into the container. Tools here (notably vendor
+# installers) then think they were run via sudo by a non-root user. We are root
 # inside the container on purpose, so drop them (issue #8).
 unset SUDO_USER SUDO_UID SUDO_GID SUDO_COMMAND
 export LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
@@ -74,7 +74,7 @@ apt-get install -y -qq \
   || warn "some base packages failed to install"
 
 # ── Node.js (latest LTS) ────────────────────────────────────────────────────
-# CloudCLI needs Node 22+; an older node already on the box (pulled in as a
+# Tooling here targets Node 22+; an older node already on the box (pulled in as a
 # dependency, or from a previous release's apt repo) has to be replaced, not
 # just left alone — `command -v node` alone would silently accept Node 18.
 NODE_MAJOR=0
@@ -90,13 +90,6 @@ if [ "$NODE_MAJOR" -lt 22 ]; then
 fi
 if command -v node >/dev/null 2>&1; then
   echo "    Node.js $(node --version 2>/dev/null) / npm $(npm --version 2>/dev/null)"
-  # npm 12+ blocks dependencies' install scripts behind an allowlist, which
-  # breaks native modules (CloudCLI's better-sqlite3/node-pty/bcrypt never
-  # compile → the service crash-loops with "Could not locate the bindings
-  # file" and nothing binds :3001). Restore pre-12 behavior so global installs
-  # build their native addons. Persisted in /root/.npmrc, so it also covers the
-  # updater's future cloudcli@latest upgrades and CloudCLI's in-app plugin builds.
-  npm config set dangerously-allow-all-scripts true 2>/dev/null || true
   # Global dev tools — install only if absent (updater keeps them current).
   command -v prettier >/dev/null 2>&1 || \
     npm install -g "${NPM_QUIET[@]}" typescript ts-node eslint prettier || warn "global npm tools failed"
@@ -135,142 +128,106 @@ if command -v docker >/dev/null 2>&1; then
   dpkg -s docker-compose-plugin >/dev/null 2>&1 || apt-get install -y -qq docker-compose-plugin 2>/dev/null || true
 fi
 
-# ── Claude Code (native installer) ──────────────────────────────────────────
-if ! command -v claude >/dev/null 2>&1 && [ ! -x "$HOME/.local/bin/claude" ]; then
-  log "Installing Claude Code"
-  # This box runs Claude as root by design (/root/.claude). The installer stops
-  # when it looks like it was run via sudo; the SUDO_* unset above prevents that,
-  # and this opt-in is a belt-and-braces guard (issue #8).
-  curl -fsSL https://claude.ai/install.sh | CLAUDE_INSTALL_ALLOW_SUDO=1 bash || warn "Claude Code install failed"
-fi
-# Keep /usr/local/bin/claude pointing at the installed binary (idempotent).
-if [ -x "$HOME/.local/bin/claude" ]; then
-  ln -sf "$HOME/.local/bin/claude" /usr/local/bin/claude 2>/dev/null || true
-elif [ -x "$HOME/.claude/bin/claude" ]; then
-  ln -sf "$HOME/.claude/bin/claude" /usr/local/bin/claude 2>/dev/null || true
-fi
-CLAUDE_BIN="$(command -v claude || echo /usr/local/bin/claude)"
-echo "    Claude Code: $("$CLAUDE_BIN" --version 2>/dev/null || echo 'version unknown')"
-
-# ── Claude settings (managed keys enforced; user additions preserved) ───────
-# Merge, don't clobber. The repo enforces the keys it owns (auto mode, the deny
-# floor, required env, the curated plugins, thinking) while preserving anything
-# the user added via the UI — their own enabled plugins, custom permission rules,
-# a statusLine, hooks, etc. A wholesale overwrite would silently disable a user's
-# own plugins on every nightly run (settings.json is where plugin-enabled state
-# lives). merge-settings.py tolerates a missing/empty/corrupt file by falling
-# back to the template, so a fresh box still gets the full managed config.
-# settings.retired.json lists managed keys/rules earlier releases wrote that are
-# now wrong or obsolete; they are stripped first, so a removal in the template
-# actually reaches deployed boxes (a pure additive merge never would).
-log "Merging managed Claude settings (preserving user additions)"
-mkdir -p /root/.claude
-if ! python3 "$REPO_DIR/guest/merge-settings.py" "$TEMPLATES/settings.json" /root/.claude/settings.json "$TEMPLATES/settings.retired.json"; then
-  warn "settings merge failed; falling back to the managed template"
-  install -m 0644 "$TEMPLATES/settings.json" /root/.claude/settings.json
-fi
-chmod 0644 /root/.claude/settings.json
-
-# ── Plugin marketplaces + plugins (idempotent; non-fatal) ───────────────────
-# All curated plugins come from Anthropic's first-party marketplace
-# (claude-plugins-official); superpowers from its own. We deliberately do NOT add
-# the anthropics/claude-code "demo" marketplace anymore — its example plugins
-# shadow the official ones with the same names, and everything we want lives in
-# the official one. Older boxes that installed the demo copies get cleaned below.
-log "Ensuring plugin marketplaces + plugins"
-"$CLAUDE_BIN" plugin marketplace add anthropics/claude-plugins-official >/dev/null 2>&1 || true
-"$CLAUDE_BIN" plugin marketplace add obra/superpowers-marketplace       >/dev/null 2>&1 || true
-# Refresh the official index BEFORE installing: a freshly-added marketplace can
-# have a stale/empty plugin list, which silently makes name@official installs
-# fall through (how older boxes ended up with the demo-marketplace copies).
-"$CLAUDE_BIN" plugin marketplace update claude-plugins-official >/dev/null 2>&1 || true
-
-# `plugin list --json` gives one object per install with a stable `id`
-# ("name@marketplace"); fall back to the human-readable listing on a Claude Code
-# too old for --json. Either way, a bare grep of a name would also match e.g.
-# "code-review-extras", so match the full "name@marketplace" id.
-installed_plugins="$("$CLAUDE_BIN" plugin list --json 2>/dev/null \
-  | python3 -c 'import json,sys; print("\n".join(p.get("id","") for p in json.load(sys.stdin)))' 2>/dev/null \
-  || "$CLAUDE_BIN" plugin list 2>/dev/null || true)"
-install_plugin() {  # install_plugin <name> <marketplace>
-  local ref="$1@$2"
-  echo "$installed_plugins" | grep -qxF "$ref" || echo "$installed_plugins" | grep -qF " $ref" \
-    && { echo "    $ref already installed"; return 0; }
-  # --yes: a plugin with a marketplace-declared install command would otherwise
-  # wait on a y/n prompt that a cron run can never answer. No-op for
-  # the plugins below, which all install from git.
-  if "$CLAUDE_BIN" plugin install "$ref" --yes 2>/dev/null; then
-    echo "    installed $ref"
-  else
-    warn "could not install plugin: $ref"
-  fi
+# ── Antigravity CLI (agy) ───────────────────────────────────────────────────
+# Official installer: curl -fsSL https://antigravity.google/cli/install.sh | bash
+# The docs don't say where the binary lands, so after installing we look in the
+# usual per-user bin dirs and symlink it onto /usr/local/bin (on every PATH,
+# including cron's) so `agy` works everywhere.
+find_agy() {
+  local c
+  for c in "$(command -v agy 2>/dev/null)" "$HOME/.local/bin/agy" "$HOME/.antigravity/bin/agy" \
+           "$HOME/.gemini/bin/agy" "$HOME/.gemini/antigravity-cli/bin/agy"; do
+    [ -n "$c" ] && [ -x "$c" ] && [ "$c" != /usr/local/bin/agy ] && { readlink -f "$c"; return 0; }
+  done
+  # Last resort: search /root shallowly for an executable named agy.
+  find "$HOME" -maxdepth 5 -type f -name agy -perm -u+x 2>/dev/null | head -1
 }
-# Curated plugins + LSP language-server plugins (real-time diagnostics/nav for
-# the toolchains this box already ships). All from the official marketplace.
-# One *-lsp plugin per toolchain in the base image (Node/TS, Python, Go, Rust,
-# and C/C++ via build-essential). The other official LSP plugins (jdtls, ruby,
-# php, csharp, swift, kotlin, lua) are deliberately skipped: no toolchain here.
-# modern-web-guidance fetches its guides via `npx modern-web-guidance@latest` at
-# query time, so it needs outbound npm; it degrades to nothing useful offline.
-for p in code-review commit-commands frontend-design security-guidance context7 \
-         claude-security modern-web-guidance \
-         typescript-lsp pyright-lsp gopls-lsp rust-analyzer-lsp clangd-lsp; do
-  install_plugin "$p" claude-plugins-official
-done
-# superpowers now also ships in the official marketplace, but pinned to a SHA that
-# lags upstream — keep installing from Jesse Vincent's own marketplace so the box
-# tracks current releases. (Both refs coexist fine; we only ever install this one.)
-# elements-of-style lives only here; it is pure markdown, no hooks or MCP server.
-for p in superpowers elements-of-style; do
-  install_plugin "$p" superpowers-marketplace
-done
-
-# One-time cleanup: shed the old anthropics/claude-code "demo" marketplace and any
-# duplicate plugin copies installed from it (older boxes), so the skills menu
-# doesn't show two of each. Uninstalling also drops their enabledPlugins entries.
-# Idempotent no-op once a box is clean.
-for p in code-review commit-commands frontend-design security-guidance; do
-  if echo "$installed_plugins" | grep -qF "${p}@claude-code-plugins"; then
-    "$CLAUDE_BIN" plugin uninstall "${p}@claude-code-plugins" >/dev/null 2>&1 \
-      && echo "    removed legacy ${p}@claude-code-plugins" || true
-  fi
-done
-"$CLAUDE_BIN" plugin marketplace remove claude-code-plugins >/dev/null 2>&1 || true
-
-# ── Language servers for the *-lsp plugins ──────────────────────────────────
-# The LSP plugins are thin: they shell out to these binaries via PATH and do NOT
-# install them. Put each on the npm global bin, /usr/local/bin, or /usr/bin (apt)
-# — all on the cloudcli.service PATH — so the web-UI's Claude finds them too.
-# Guarded so nightly runs don't reinstall.
-log "Ensuring language servers for the LSP plugins"
-command -v typescript-language-server >/dev/null 2>&1 || \
-  npm install -g "${NPM_QUIET[@]}" typescript-language-server typescript || warn "typescript-language-server install failed"
-command -v pyright-langserver >/dev/null 2>&1 || \
-  npm install -g "${NPM_QUIET[@]}" pyright || warn "pyright install failed"
-command -v clangd >/dev/null 2>&1 || \
-  apt-get install -y -qq clangd || warn "clangd install failed"
-if [ ! -x /usr/local/bin/gopls ] && [ -x /usr/local/go/bin/go ]; then
-  GOBIN=/usr/local/bin /usr/local/go/bin/go install golang.org/x/tools/gopls@latest || warn "gopls install failed"
+if ! command -v agy >/dev/null 2>&1; then
+  log "Installing Antigravity CLI (agy)"
+  curl -fsSL https://antigravity.google/cli/install.sh | bash || warn "Antigravity CLI install failed"
 fi
-if ! command -v rust-analyzer >/dev/null 2>&1 && [ -x "$HOME/.cargo/bin/rustup" ]; then
-  "$HOME/.cargo/bin/rustup" component add rust-analyzer >/dev/null 2>&1 \
-    && ln -sf "$("$HOME/.cargo/bin/rustup" which rust-analyzer 2>/dev/null)" /usr/local/bin/rust-analyzer \
-    || warn "rust-analyzer install failed"
+AGY_REAL="$(find_agy)"
+if [ -n "$AGY_REAL" ] && [ "$AGY_REAL" != "$(readlink -f /usr/local/bin/agy 2>/dev/null)" ]; then
+  ln -sf "$AGY_REAL" /usr/local/bin/agy 2>/dev/null || true
+fi
+AGY_BIN="$(command -v agy || echo /usr/local/bin/agy)"
+echo "    agy: ${AGY_REAL:-not found} ($("$AGY_BIN" --version 2>/dev/null | head -1 || echo 'version unknown'))"
+
+# ── Sign-in support for a headless box ──────────────────────────────────────
+# agy keeps its Google sign-in in the OS keyring (Linux Secret Service over
+# D-Bus). A bare LXC has neither, which is the likely cause of the reported
+# "sign-in loop" on headless Linux. Install a keyring + user D-Bus so an SSH
+# login session can provide one. Fallback that needs no keyring: an API key in
+# /etc/claudelxc/agy.env (GEMINI_API_KEY=...), loaded by the managed .bashrc
+# block below together with "modelProvider": "gemini".
+log "Ensuring keyring + D-Bus packages for agy sign-in"
+apt-get install -y -qq dbus-user-session gnome-keyring libsecret-1-0 libsecret-tools \
+  || warn "keyring packages failed to install"
+mkdir -p /etc/claudelxc
+if [ ! -f /etc/claudelxc/agy.env ]; then
+  cat > /etc/claudelxc/agy.env <<'AGYENV'
+# Optional: Gemini API key for agy, used INSTEAD of Google sign-in.
+# Uncomment and fill in, then open a new shell. Also set
+#   "modelProvider": "gemini"
+# in /root/.gemini/antigravity-cli/settings.json (remove it to go back to sign-in).
+# GEMINI_API_KEY=
+AGYENV
+fi
+chmod 0600 /etc/claudelxc/agy.env
+
+# ── agy settings (managed keys enforced; user additions preserved) ──────────
+# Same merge as the Claude version: the template's keys (agentMode auto + the
+# secret deny-floor) are forced every run; anything you add via /config or
+# /permissions survives. agy writes this file 0600 itself, so keep that mode.
+log "Merging managed agy settings (preserving user additions)"
+AGY_SETTINGS=/root/.gemini/antigravity-cli/settings.json
+mkdir -p "$(dirname "$AGY_SETTINGS")"
+if ! python3 "$REPO_DIR/guest/merge-settings.py" "$TEMPLATES/agy-settings.json" "$AGY_SETTINGS" "$TEMPLATES/agy-settings.retired.json"; then
+  warn "agy settings merge failed; falling back to the managed template"
+  install -m 0600 "$TEMPLATES/agy-settings.json" "$AGY_SETTINGS"
+fi
+chmod 0600 "$AGY_SETTINGS"
+
+# ── MCP servers (context7 docs lookup) ──────────────────────────────────────
+log "Merging managed MCP servers (context7)"
+AGY_MCP=/root/.gemini/config/mcp_config.json
+mkdir -p "$(dirname "$AGY_MCP")"
+if ! python3 "$REPO_DIR/guest/merge-settings.py" "$TEMPLATES/agy-mcp.json" "$AGY_MCP"; then
+  warn "MCP config merge failed; falling back to the managed template"
+  install -m 0644 "$TEMPLATES/agy-mcp.json" "$AGY_MCP"
+fi
+
+# ── Plugins (best-effort; never blocks a cron run) ──────────────────────────
+# superpowers from its GitHub repo. Installs can need a sign-in, and an
+# interactive prompt would hang cron, so: no stdin, hard timeout, non-fatal.
+# Skipped once present. Before first sign-in this may just warn; the next
+# nightly run (or `claudelxc-update`) retries.
+log "Ensuring agy plugins (best-effort)"
+if [ -x "$AGY_BIN" ]; then
+  if "$AGY_BIN" plugin list 2>/dev/null </dev/null | grep -qi superpowers; then
+    echo "    superpowers already installed"
+  elif timeout 180 "$AGY_BIN" plugin install https://github.com/obra/superpowers </dev/null >/dev/null 2>&1; then
+    echo "    installed superpowers"
+  else
+    warn "could not install superpowers plugin yet (sign in to agy, then run claudelxc-update)"
+  fi
 fi
 
 # ── webapp-testing skill (MANAGED — refreshed every converge) ───────────────
 log "Installing/refreshing webapp-testing skill"
 if git clone --depth 1 --filter=blob:none --sparse https://github.com/anthropics/skills.git /tmp/anthropic-skills 2>/dev/null; then
   ( cd /tmp/anthropic-skills && git sparse-checkout set skills/webapp-testing >/dev/null 2>&1 )
-  mkdir -p /root/.claude/skills
-  rm -rf /root/.claude/skills/webapp-testing
-  cp -r /tmp/anthropic-skills/skills/webapp-testing /root/.claude/skills/webapp-testing
+  # ~/.gemini/config/skills is the personal skills dir shared by agy and the
+  # Antigravity app (one level deep: <name>/SKILL.md).
+  mkdir -p /root/.gemini/config/skills
+  rm -rf /root/.gemini/config/skills/webapp-testing
+  cp -r /tmp/anthropic-skills/skills/webapp-testing /root/.gemini/config/skills/webapp-testing
   rm -rf /tmp/anthropic-skills
 else
   warn "could not fetch webapp-testing skill (offline?); leaving existing copy"
 fi
 
-# ── Playwright (Python for the skill; Node global for CloudCLI Browser) ─────
+# ── Playwright (Python, for the webapp-testing skill) ───────────────────────
 # Playwright supports Ubuntu 26.04 natively since 1.61 (microsoft/playwright#40117
 # is closed), so the old PLAYWRIGHT_HOST_PLATFORM_OVERRIDE=ubuntu24.04-x64 hack
 # is gone. Scrub it from /etc/environment on boxes that got it from an earlier
@@ -285,10 +242,6 @@ if ! python3 -m pip show playwright >/dev/null 2>&1; then
   python3 -m pip install --break-system-packages -q playwright \
     || warn "pip install playwright failed"
 fi
-if ! command -v playwright >/dev/null 2>&1 && ! npm ls -g playwright >/dev/null 2>&1; then
-  log "Installing global Node Playwright (CloudCLI Browser feature)"
-  npm install -g "${NPM_QUIET[@]}" playwright || warn "global Playwright install failed"
-fi
 if ! ls -d /root/.cache/ms-playwright/chromium-* >/dev/null 2>&1; then
   log "Downloading Chromium"
   python3 -m playwright install --with-deps chromium \
@@ -296,13 +249,13 @@ if ! ls -d /root/.cache/ms-playwright/chromium-* >/dev/null 2>&1; then
     || warn "Chromium download failed (retry later)"
 fi
 
-# ── /project + seed CLAUDE.md (USER-EDITABLE — written only if absent) ───────
+# ── /project + seed AGENTS.md (USER-EDITABLE — written only if absent) ────────
 mkdir -p /project
-if [ ! -f /project/CLAUDE.md ]; then
-  log "Seeding /project/CLAUDE.md"
-  install -m 0644 "$TEMPLATES/project-CLAUDE.md" /project/CLAUDE.md
+if [ ! -f /project/AGENTS.md ]; then
+  log "Seeding /project/AGENTS.md"
+  install -m 0644 "$TEMPLATES/project-AGENTS.md" /project/AGENTS.md
 else
-  echo "    /project/CLAUDE.md exists — left as-is"
+  echo "    /project/AGENTS.md exists — left as-is"
 fi
 
 # ── SSH (idempotent) ────────────────────────────────────────────────────────
@@ -345,7 +298,7 @@ $BEGIN
 export EDITOR=nano
 export LANG=en_US.UTF-8
 export TZ=America/New_York
-export PATH="\$HOME/.local/bin:\$HOME/.claude/bin:\$HOME/.cargo/bin:/usr/local/go/bin:\$PATH"
+export PATH="\$HOME/.local/bin:\$HOME/.cargo/bin:/usr/local/go/bin:\$PATH"
 alias ll="ls -lah --color=auto"
 alias cls="clear"
 alias ..="cd .."
@@ -354,6 +307,8 @@ alias gs="git status"
 alias gl="git log --oneline -20"
 alias dc="docker compose"
 alias dps="docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'"
+# Optional agy API key (see /etc/claudelxc/agy.env). Exported only if set.
+if [ -r /etc/claudelxc/agy.env ]; then set -a; . /etc/claudelxc/agy.env; set +a; fi
 cd /project 2>/dev/null || true
 $END
 BASHRC
@@ -363,44 +318,12 @@ git config --global init.defaultBranch main
 git config --global core.editor nano
 git config --global pull.rebase false
 
-# ── CloudCLI UI ─────────────────────────────────────────────────────────────
-if ! command -v cloudcli >/dev/null 2>&1; then
-  log "Installing CloudCLI UI"
-  npm install -g "${NPM_QUIET[@]}" @cloudcli-ai/cloudcli \
-    || warn "CloudCLI UI install failed (needs Node 22+ and build tools for node-pty)"
-fi
-CCUI_BIN="$(command -v cloudcli || echo "$(npm prefix -g 2>/dev/null)/bin/cloudcli")"
-[ -x "$CCUI_BIN" ] || warn "cloudcli binary not found at '$CCUI_BIN' — the web UI on :3001 will not start"
-mkdir -p /root/.cloudcli
-echo "    CloudCLI UI: $("$CCUI_BIN" version 2>/dev/null || echo 'version unknown')"
-
-# Self-heal native modules: if CloudCLI's better-sqlite3 addon isn't compiled
-# (e.g. it was installed under npm 12 before scripts were allowed, or an upgrade
-# didn't rebuild), recompile — otherwise the service crash-loops and :3001 stays
-# down. No-op once the binding is present, so it's cheap on a healthy re-converge.
-CCUI_PKG="$(npm root -g 2>/dev/null)/@cloudcli-ai/cloudcli"
-if [ -d "$CCUI_PKG/node_modules/better-sqlite3" ] && \
-   ! ls "$CCUI_PKG/node_modules/better-sqlite3/build/Release/"*.node >/dev/null 2>&1; then
-  log "Rebuilding CloudCLI native modules (better-sqlite3/node-pty/bcrypt)"
-  ( cd "$CCUI_PKG" && npm rebuild >/dev/null 2>&1 ) || warn "CloudCLI native rebuild failed"
-fi
-
-# systemd unit (MANAGED) — write from template, reload+restart only on change so
-# we don't drop live UI sessions on an unchanged nightly run.
-log "Applying cloudcli.service unit"
-NEW_UNIT="$(mktemp)"
-sed "s#@CCUI_BIN@#${CCUI_BIN}#g" "$TEMPLATES/cloudcli.service" > "$NEW_UNIT"
-if ! cmp -s "$NEW_UNIT" /etc/systemd/system/cloudcli.service 2>/dev/null; then
-  install -m 0644 "$NEW_UNIT" /etc/systemd/system/cloudcli.service
-  systemctl daemon-reload
-  UNIT_CHANGED=1
-fi
-rm -f "$NEW_UNIT"
-systemctl enable cloudcli >/dev/null 2>&1 || true
-if [ "${UNIT_CHANGED:-0}" = 1 ]; then
-  systemctl restart cloudcli || warn "cloudcli restart failed (check 'journalctl -u cloudcli')"
-else
-  systemctl is-active --quiet cloudcli || systemctl start cloudcli || warn "cloudcli failed to start"
+# ── CloudCLI UI: not used on this box ───────────────────────────────────────
+# CloudCLI only drives Claude Code / Codex / Cursor / Gemini CLI, not agy. If a
+# box was converted from the Claude version, stop its leftover service.
+if systemctl cat cloudcli.service >/dev/null 2>&1; then
+  log "Disabling leftover cloudcli.service (not used with agy)"
+  systemctl disable --now cloudcli >/dev/null 2>&1 || true
 fi
 
 # ── Update tooling (MANAGED — copied from the repo each converge) ───────────

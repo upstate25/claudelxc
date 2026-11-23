@@ -1,0 +1,3 @@
+{
+  "_comment": "Managed keys/values that earlier releases of this branch wrote into /root/.gemini/antigravity-cli/settings.json and that are now wrong or obsolete. merge-settings.py strips these BEFORE applying agy-settings.json, so a removal in the template actually reaches deployed boxes. Dicts: list the keys to delete. Lists: list the exact items to drop. Empty for now."
+}

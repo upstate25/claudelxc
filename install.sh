@@ -1,25 +1,25 @@
 #!/usr/bin/env bash
 # ============================================================================
-# claudelxc - Claude Code LXC Deployer for Proxmox
-# Creates a fully provisioned Ubuntu 26.04 LXC container ready for Claude Code,
+# claudelxc (antigravity branch) - Antigravity CLI LXC Deployer for Proxmox
+# Creates a fully provisioned Ubuntu 26.04 LXC container ready for Antigravity CLI (agy),
 # then hands it over to an idempotent converge that also self-updates nightly.
 #
 # Run on your Proxmox host:
-#   bash <(curl -fsSL https://raw.githubusercontent.com/serversathome/claudelxc/stable/install.sh)
+#   bash <(curl -fsSL https://raw.githubusercontent.com/upstate25/claudelxc/antigravity/install.sh)
 #
 # Env overrides (advanced):
 #   CLAUDELXC_REPO   git URL to clone into the box   (default: this repo)
-#   CLAUDELXC_BRANCH branch the box tracks + pulls   (default: stable)
+#   CLAUDELXC_BRANCH branch the box tracks + pulls   (default: antigravity)
 #   CLAUDELXC_TUI=0  plain questions instead of the full-screen form
 #                    (same as running with --plain)
 #
-# GitHub: https://github.com/serversathome/claudelxc
+# GitHub: https://github.com/upstate25/claudelxc (antigravity branch; fork of serversathome/claudelxc)
 # ============================================================================
 
 set -Eeuo pipefail
 
-REPO="${CLAUDELXC_REPO:-https://github.com/serversathome/claudelxc.git}"
-BRANCH="${CLAUDELXC_BRANCH:-stable}"
+REPO="${CLAUDELXC_REPO:-https://github.com/upstate25/claudelxc.git}"
+BRANCH="${CLAUDELXC_BRANCH:-antigravity}"
 CHECKOUT="/opt/claudelxc"
 
 # ── Colors & Helpers ────────────────────────────────────────────────────────
@@ -31,12 +31,12 @@ warn()    { echo -e "${YELLOW}[WARN]${NC} $*"; }
 error()   { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
 
 # Never die silently: any command that trips `set -e` says so, with a line number.
-trap 'rc=$?; echo -e "\n${RED}[ERROR]${NC} install.sh aborted at line ${LINENO} (exit ${rc}).\n        Please report this with the output above: https://github.com/serversathome/claudelxc/issues" >&2' ERR
+trap 'rc=$?; echo -e "\n${RED}[ERROR]${NC} install.sh aborted at line ${LINENO} (exit ${rc}).\n        Please report this with the output above: https://github.com/upstate25/claudelxc/issues" >&2' ERR
 
 header() {
   echo ""
   echo -e "${BOLD}╔══════════════════════════════════════════════════╗${NC}"
-  echo -e "${BOLD}║        Claude Code LXC Deployer (Proxmox)        ║${NC}"
+  echo -e "${BOLD}║        Antigravity LXC Deployer (Proxmox)        ║${NC}"
   echo -e "${BOLD}╚══════════════════════════════════════════════════╝${NC}"
   echo ""
 }
@@ -48,7 +48,7 @@ preflight() {
   command -v pveam &>/dev/null || error "pveam not found. Are you running this on a Proxmox host?"
   [[ -t 0 ]] || error "This installer is interactive but stdin is not a terminal.
         Use process substitution rather than a pipe:
-          bash <(curl -fsSL https://raw.githubusercontent.com/serversathome/claudelxc/stable/install.sh)"
+          bash <(curl -fsSL https://raw.githubusercontent.com/upstate25/claudelxc/antigravity/install.sh)"
 }
 
 # ── Host discovery helpers ──────────────────────────────────────────────────
@@ -185,7 +185,7 @@ problems() {
 # small or can't do it, or with --plain / CLAUDELXC_TUI=0, the questions are
 # asked one by one. TUI_PY is the program; tui runs one screen of it.
 TUI=0
-TUI_TITLE="Claude Code LXC Deployer (Proxmox)"
+TUI_TITLE="Antigravity LXC Deployer (Proxmox)"
 read -r -d '' TUI_PY <<'PY' || true
 import curses, locale, os, sys, textwrap
 
@@ -535,7 +535,7 @@ get_config() {
   TEMPLATE_STORAGE=$(default_template_storage)
   resolve_template
 
-  CT_ID=$NEXT_ID; CT_HOSTNAME=claude-code; CT_PASSWORD=""
+  CT_ID=$NEXT_ID; CT_HOSTNAME=antigravity; CT_PASSWORD=""
   CT_CORES=$(( HOST_CORES < 4 ? HOST_CORES : 4 )); CT_RAM=10240; CT_SWAP=2048; CT_DISK=30
   CT_STORAGE=$(default_rootdir_storage); CT_BRIDGE=$(default_bridge)
   CT_IP=dhcp; CT_GW=""; CT_DNS=1.1.1.1; CT_SSH_KEY=""
@@ -688,8 +688,8 @@ ask_config() {
   [[ "$CT_ID" =~ ^[0-9]+$ ]] || error "Container ID must be a number."
   id_in_use "$CT_ID" && error "Container ID $CT_ID is already used by a container or VM."
 
-  read -rp "Hostname [claude-code]: " CT_HOSTNAME
-  CT_HOSTNAME="${CT_HOSTNAME:-claude-code}"
+  read -rp "Hostname [antigravity]: " CT_HOSTNAME
+  CT_HOSTNAME="${CT_HOSTNAME:-antigravity}"
 
   # Proxmox rejects root passwords shorter than 5 characters — catch it here
   # rather than after every other prompt, at `pct create`.
@@ -832,24 +832,27 @@ write_notes() {
 
   local notes
   notes=$(cat <<'EOF'
-# 🤖 Claude Code Container
+# 🛸 Antigravity CLI Container
 
-**Web UI (CloudCLI UI):** http://__IP__:3001 — _create a login on first visit_
 **SSH:** `ssh root@__IP__`   |   **Console:** `pct enter __CTID__`
+**No web UI** — use `agy` over SSH, or connect the Antigravity desktop app to this box over SSH.
 
-## Start Claude Code
-Log in, then run `claude` (the shell auto-cd's to `/project`).
+## Start Antigravity
+SSH in, run `agy` (the shell auto-cd's to `/project`). First run prints a sign-in
+URL: open it on your PC, sign in, paste the code back. If sign-in loops, use an
+API key instead: put `GEMINI_API_KEY=...` in `/etc/claudelxc/agy.env` (chmod 600).
 
 ## Update & health
-- **Self-updates nightly** from the `claudelxc` repo (stable branch): pulls the
+- **Self-updates nightly** from `upstate25/claudelxc` (antigravity branch): pulls the
   latest deploy logic, re-applies it, refreshes packages, runs a health check.
 - `claudelxc-update` — force a full update pass now. Log: `/var/log/claudelxc-update.log`
 - `claudelxc-doctor` — run the health check on its own
 - Auto-runs daily at 4 AM ET. (Delete `/etc/cron.d/claudelxc` to disable.)
 
-## Service & config
-- `systemctl status cloudcli` — the Web UI service (`journalctl -u cloudcli` for logs)
-- Permissions: **auto mode** + secret deny-floor — `/root/.claude/settings.json`
+## Config
+- Settings: `/root/.gemini/antigravity-cli/settings.json` (auto mode + secret deny-floor)
+- MCP servers: `/root/.gemini/config/mcp_config.json` (context7)
+- Rules: `/project/AGENTS.md`
 - Deploy source of truth: `/opt/claudelxc` (git checkout)
 
 ---
@@ -871,7 +874,7 @@ print_summary() {
   ct_ip=$(pct exec "$CT_ID" -- hostname -I 2>/dev/null | awk '{print $1}') || ct_ip=""
   echo ""
   echo -e "${GREEN}${BOLD}╔══════════════════════════════════════════════════╗${NC}"
-  echo -e "${GREEN}${BOLD}║              Claude Code LXC Ready!               ║${NC}"
+  echo -e "${GREEN}${BOLD}║              Antigravity LXC Ready!               ║${NC}"
   echo -e "${GREEN}${BOLD}╚══════════════════════════════════════════════════╝${NC}"
   echo ""
   echo -e "  ${BOLD}Container:${NC} $CT_ID ($CT_HOSTNAME)"
@@ -881,10 +884,10 @@ print_summary() {
   echo -e "  ${BOLD}Connect:${NC}"
   echo -e "    Console: ${CYAN}pct enter $CT_ID${NC}"
   [[ -n "${ct_ip:-}" ]] && echo -e "    SSH:     ${CYAN}ssh root@${ct_ip}${NC}"
-  [[ -n "${ct_ip:-}" ]] && echo -e "    Web UI:  ${CYAN}http://${ct_ip}:3001${NC} (CloudCLI UI — create a login on first visit)"
   echo ""
-  echo -e "  ${BOLD}Start Claude Code:${NC} ${CYAN}claude${NC}  (shell auto-cd's to /project)"
-  echo -e "  ${BOLD}Permissions:${NC} Auto mode (classifier-guarded) + deny floor for secrets"
+  echo -e "  ${BOLD}Start Antigravity:${NC} ${CYAN}agy${NC}  (over SSH; shell auto-cd's to /project)"
+  echo -e "  ${BOLD}Sign-in:${NC}     agy prints a URL -> open on your PC -> paste the code back"
+  echo -e "  ${BOLD}Permissions:${NC} agentMode auto + deny floor for secrets"
   echo -e "  ${BOLD}Updates:${NC}     Self-updates nightly from ${BRANCH}. Force now: ${CYAN}claudelxc-update${NC}"
   echo -e "  ${BOLD}Health:${NC}      ${CYAN}claudelxc-doctor${NC}"
   echo ""
